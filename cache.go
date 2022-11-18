@@ -362,6 +362,8 @@ func (cd *Cache) mGetBytes(
 			}
 		}
 		keys = remainingKeys
+	} else {
+		keysToB = make(map[string][]byte, len(keys))
 	}
 
 	if cd.redis == nil {
