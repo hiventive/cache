@@ -332,7 +332,7 @@ func (cd *Cache) mGet(
 	}
 	for key, b := range keysToB {
 		val := reflect.New(mapValT).Interface()
-		err := cd.Unmarshal(b, val)
+		err := cd.unmarshal(b, val)
 		if err != nil {
 			return err
 		}
@@ -379,8 +379,14 @@ func (cd *Cache) mGetBytes(
 		return nil, err
 	}
 	for i, val := range vals {
-		if val != nil {
-			keysToB[keys[i]] = val.([]byte)
+		if val == nil {
+			continue
+		}
+		switch typedVal := val.(type) {
+		case string:
+			keysToB[keys[i]] = []byte(typedVal)
+		case []byte:
+			keysToB[keys[i]] = typedVal
 		}
 	}
 
