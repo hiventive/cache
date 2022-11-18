@@ -304,15 +304,15 @@ func (cd *Cache) getBytes(ctx context.Context, key string, skipLocalCache bool) 
 	return b, nil
 }
 
-// MGetSkippingChache gets the values for the given keys
+// MGet gets the values for the given keys
 // and puts them in a map[string]T
 func (cd *Cache) MGet(ctx context.Context, dest any, keys ...string) error {
 	return cd.mGet(ctx, true, dest, keys...)
 }
 
-// MGetSkippingChache gets the values for the given keys
+// MGetSkippingChace gets the values for the given keys
 // skipping local cache and puts them in a map[string]T
-func (cd *Cache) MGetSkippingChache(ctx context.Context, dest any, keys ...string) error {
+func (cd *Cache) MGetSkippingLocalCache(ctx context.Context, dest any, keys ...string) error {
 	return cd.mGet(ctx, false, dest, keys...)
 }
 
