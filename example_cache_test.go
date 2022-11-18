@@ -45,7 +45,7 @@ func Example_basicUsage() {
 	}
 
 	var wanted Object
-	if err := mycache.Get(ctx, key, &wanted); err == nil {
+	if err := mycache.Get(ctx, &wanted, key); err == nil {
 		fmt.Println(wanted)
 	}
 
@@ -69,7 +69,7 @@ func Example_advancedUsage() {
 	err := mycache.Once(&cache.Item{
 		Key:   "mykey",
 		Value: obj, // destination
-		Do: func(*cache.Item) (interface{}, error) {
+		Do: func(*cache.Item) (any, error) {
 			return &Object{
 				Str: "mystring",
 				Num: 42,

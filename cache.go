@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -26,30 +27,40 @@ const (
 
 var (
 	ErrCacheMiss          = errors.New("cache: key is missing")
+	errRedisNil           = errors.New("cache: Redis is nil")
 	errRedisLocalCacheNil = errors.New("cache: both Redis and LocalCache are nil")
 )
 
 type rediser interface {
-	Set(ctx context.Context, key string, value interface{}, ttl time.Duration) *redis.StatusCmd
-	SetXX(ctx context.Context, key string, value interface{}, ttl time.Duration) *redis.BoolCmd
-	SetNX(ctx context.Context, key string, value interface{}, ttl time.Duration) *redis.BoolCmd
+	Set(ctx context.Context, key string, value any, ttl time.Duration) *redis.StatusCmd
+	SetXX(ctx context.Context, key string, value any, ttl time.Duration) *redis.BoolCmd
+	SetNX(ctx context.Context, key string, value any, ttl time.Duration) *redis.BoolCmd
 
+	MGet(ctx context.Context, keys ...string) *redis.SliceCmd
 	Get(ctx context.Context, key string) *redis.StringCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
+
+	Pipeline() redis.Pipeliner
+	TxPipeline() redis.Pipeliner
+}
+
+type pipelinedRediser interface {
+	rediser
+	Exec(ctx context.Context) ([]redis.Cmder, error)
 }
 
 type Item struct {
 	Ctx context.Context
 
 	Key   string
-	Value interface{}
+	Value any
 
 	// TTL is the cache expiration time.
 	// Default TTL is 1 hour.
 	TTL time.Duration
 
 	// Do returns value to be cached.
-	Do func(*Item) (interface{}, error)
+	Do func(*Item) (any, error)
 
 	// SetXX only sets the key if it already exists.
 	SetXX bool
@@ -68,7 +79,7 @@ func (item *Item) Context() context.Context {
 	return item.Ctx
 }
 
-func (item *Item) value() (interface{}, error) {
+func (item *Item) value() (any, error) {
 	if item.Do != nil {
 		return item.Do(item)
 	}
@@ -97,9 +108,10 @@ func (item *Item) ttl() time.Duration {
 }
 
 //------------------------------------------------------------------------------
+
 type (
-	MarshalFunc   func(interface{}) ([]byte, error)
-	UnmarshalFunc func([]byte, interface{}) error
+	MarshalFunc   func(any) ([]byte, error)
+	UnmarshalFunc func([]byte, any) error
 )
 
 type Options struct {
@@ -111,59 +123,97 @@ type Options struct {
 }
 
 type Cache struct {
-	opt *Options
+	redis rediser
+	*cache
+}
+
+type cache struct {
+	localCache LocalCache
 
 	group singleflight.Group
 
 	marshal   MarshalFunc
 	unmarshal UnmarshalFunc
 
-	hits   uint64
-	misses uint64
+	statsEnabled bool
+	hits         uint64
+	misses       uint64
 }
 
 func New(opt *Options) *Cache {
-	cacher := &Cache{
-		opt: opt,
-	}
-
 	if opt.Marshal == nil {
-		cacher.marshal = cacher._marshal
-	} else {
-		cacher.marshal = opt.Marshal
+		opt.Marshal = _marshal
+	}
+	if opt.Unmarshal == nil {
+		opt.Unmarshal = _unmarshal
 	}
 
-	if opt.Unmarshal == nil {
-		cacher.unmarshal = cacher._unmarshal
-	} else {
-		cacher.unmarshal = opt.Unmarshal
+	cacher := &Cache{
+		redis: opt.Redis,
+		cache: &cache{
+			localCache:   opt.LocalCache,
+			statsEnabled: opt.StatsEnabled,
+			marshal:      opt.Marshal,
+			unmarshal:    opt.Unmarshal,
+		},
 	}
 	return cacher
 }
 
+type PipelinedCache struct {
+	redis pipelinedRediser
+	*cache
+}
+
+func (cd *Cache) Pipeline() (*PipelinedCache, error) {
+	return cd.pipeline(rediser.Pipeline)
+}
+
+func (cd *Cache) TxPipeline() (*PipelinedCache, error) {
+	return cd.pipeline(rediser.TxPipeline)
+}
+
+func (cd *Cache) pipeline(fn func(rediser) redis.Pipeliner) (*PipelinedCache, error) {
+	if cd.redis == nil {
+		return nil, errRedisNil
+	}
+
+	cacher := &PipelinedCache{
+		redis: fn(cd.redis),
+		cache: cd.cache,
+	}
+	return cacher, nil
+}
+
 // Set caches the item.
 func (cd *Cache) Set(item *Item) error {
-	_, _, err := cd.set(item)
+	_, _, err := set(cd.redis, cd.cache, item)
 	return err
 }
 
-func (cd *Cache) set(item *Item) ([]byte, bool, error) {
+// Set caches the item.
+func (cp *PipelinedCache) Set(item *Item) error {
+	_, _, err := set(cp.redis, cp.cache, item)
+	return err
+}
+
+func set(redis rediser, cache *cache, item *Item) ([]byte, bool, error) {
 	value, err := item.value()
 	if err != nil {
 		return nil, false, err
 	}
 
-	b, err := cd.Marshal(value)
+	b, err := cache.marshal(value)
 	if err != nil {
 		return nil, false, err
 	}
 
-	if cd.opt.LocalCache != nil && !item.SkipLocalCache {
-		cd.opt.LocalCache.Set(item.Key, b)
+	if cache.localCache != nil && !item.SkipLocalCache {
+		cache.localCache.Set(item.Key, b)
 	}
 
-	if cd.opt.Redis == nil {
-		if cd.opt.LocalCache == nil {
+	if redis == nil {
+		if cache.localCache == nil {
 			return b, true, errRedisLocalCacheNil
 		}
 		return b, true, nil
@@ -175,12 +225,12 @@ func (cd *Cache) set(item *Item) ([]byte, bool, error) {
 	}
 
 	if item.SetXX {
-		return b, true, cd.opt.Redis.SetXX(item.Context(), item.Key, b, ttl).Err()
+		return b, true, redis.SetXX(item.Context(), item.Key, b, ttl).Err()
 	}
 	if item.SetNX {
-		return b, true, cd.opt.Redis.SetNX(item.Context(), item.Key, b, ttl).Err()
+		return b, true, redis.SetNX(item.Context(), item.Key, b, ttl).Err()
 	}
-	return b, true, cd.opt.Redis.Set(item.Context(), item.Key, b, ttl).Err()
+	return b, true, redis.Set(item.Context(), item.Key, b, ttl).Err()
 }
 
 // Exists reports whether value for the given key exists.
@@ -190,48 +240,52 @@ func (cd *Cache) Exists(ctx context.Context, key string) bool {
 }
 
 // Get gets the value for the given key.
-func (cd *Cache) Get(ctx context.Context, key string, value interface{}) error {
-	return cd.get(ctx, key, value, false)
+func (cd *Cache) Get(ctx context.Context, dest any, key string) error {
+	return cd.get(ctx, false, dest, key)
 }
 
-// Get gets the value for the given key skipping local cache.
+// GetSkippingLocalCache gets the value for the given key skipping local cache.
 func (cd *Cache) GetSkippingLocalCache(
-	ctx context.Context, key string, value interface{},
+	ctx context.Context,
+	dest any,
+	key string,
 ) error {
-	return cd.get(ctx, key, value, true)
+
+	return cd.get(ctx, true, dest, key)
 }
 
 func (cd *Cache) get(
 	ctx context.Context,
-	key string,
-	value interface{},
 	skipLocalCache bool,
+	dest any,
+	key string,
 ) error {
+
 	b, err := cd.getBytes(ctx, key, skipLocalCache)
 	if err != nil {
 		return err
 	}
-	return cd.unmarshal(b, value)
+	return cd.unmarshal(b, dest)
 }
 
 func (cd *Cache) getBytes(ctx context.Context, key string, skipLocalCache bool) ([]byte, error) {
-	if !skipLocalCache && cd.opt.LocalCache != nil {
-		b, ok := cd.opt.LocalCache.Get(key)
+	if !skipLocalCache && cd.localCache != nil {
+		b, ok := cd.localCache.Get(key)
 		if ok {
 			return b, nil
 		}
 	}
 
-	if cd.opt.Redis == nil {
-		if cd.opt.LocalCache == nil {
+	if cd.redis == nil {
+		if cd.localCache == nil {
 			return nil, errRedisLocalCacheNil
 		}
 		return nil, ErrCacheMiss
 	}
 
-	b, err := cd.opt.Redis.Get(ctx, key).Bytes()
+	b, err := cd.redis.Get(ctx, key).Bytes()
 	if err != nil {
-		if cd.opt.StatsEnabled {
+		if cd.statsEnabled {
 			atomic.AddUint64(&cd.misses, 1)
 		}
 		if err == redis.Nil {
@@ -240,14 +294,104 @@ func (cd *Cache) getBytes(ctx context.Context, key string, skipLocalCache bool) 
 		return nil, err
 	}
 
-	if cd.opt.StatsEnabled {
+	if cd.statsEnabled {
 		atomic.AddUint64(&cd.hits, 1)
 	}
 
-	if !skipLocalCache && cd.opt.LocalCache != nil {
-		cd.opt.LocalCache.Set(key, b)
+	if !skipLocalCache && cd.localCache != nil {
+		cd.localCache.Set(key, b)
 	}
 	return b, nil
+}
+
+// MGetSkippingChache gets the values for the given keys
+// and puts them in a map[string]T
+func (cd *Cache) MGet(ctx context.Context, dest any, keys ...string) error {
+	return cd.mGet(ctx, true, dest, keys...)
+}
+
+// MGetSkippingChache gets the values for the given keys
+// skipping local cache and puts them in a map[string]T
+func (cd *Cache) MGetSkippingChache(ctx context.Context, dest any, keys ...string) error {
+	return cd.mGet(ctx, false, dest, keys...)
+}
+
+func (cd *Cache) mGet(
+	ctx context.Context,
+	skipLocalCache bool,
+	destMap any,
+	keys ...string,
+) error {
+
+	mapV := reflect.ValueOf(destMap).Elem()
+	mapValT := mapV.Type().Elem()
+
+	keysToB, err := cd.mGetBytes(ctx, skipLocalCache, keys...)
+	if err != nil {
+		return err
+	}
+	for key, b := range keysToB {
+		val := reflect.New(mapValT).Interface()
+		err := cd.Unmarshal(b, val)
+		if err != nil {
+			return err
+		}
+		mapV.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(val).Elem())
+	}
+
+	return nil
+}
+
+func (cd *Cache) mGetBytes(
+	ctx context.Context,
+	skipLocalCache bool,
+	keys ...string,
+) (map[string][]byte, error) {
+
+	var keysToB map[string][]byte
+	if !skipLocalCache && cd.localCache != nil {
+		keysToB = cd.localCache.MGet(keys)
+		if len(keysToB) == len(keys) {
+			return keysToB, nil
+		}
+		remainingKeys := make([]string, 0, len(keys)-len(keysToB))
+		for _, key := range keys {
+			_, ok := keysToB[key]
+			if !ok {
+				remainingKeys = append(remainingKeys, key)
+			}
+		}
+		keys = remainingKeys
+	}
+
+	if cd.redis == nil {
+		if cd.localCache == nil {
+			return nil, errRedisLocalCacheNil
+		}
+		return keysToB, nil
+	}
+
+	vals, err := cd.redis.MGet(ctx, keys...).Result()
+	if err != nil {
+		if cd.statsEnabled {
+			atomic.AddUint64(&cd.misses, uint64(len(keys)))
+		}
+		return nil, err
+	}
+	for i, val := range vals {
+		if val != nil {
+			keysToB[keys[i]] = val.([]byte)
+		}
+	}
+
+	if cd.statsEnabled {
+		atomic.AddUint64(&cd.hits, uint64(len(keysToB)))
+	}
+
+	if !skipLocalCache && cd.localCache != nil {
+		cd.localCache.MSet(keysToB)
+	}
+	return keysToB, nil
 }
 
 // Once gets the item.Value for the given item.Key from the cache or
@@ -277,21 +421,21 @@ func (cd *Cache) Once(item *Item) error {
 }
 
 func (cd *Cache) getSetItemBytesOnce(item *Item) (b []byte, cached bool, err error) {
-	if cd.opt.LocalCache != nil {
-		b, ok := cd.opt.LocalCache.Get(item.Key)
+	if cd.localCache != nil {
+		b, ok := cd.localCache.Get(item.Key)
 		if ok {
 			return b, true, nil
 		}
 	}
 
-	v, err, _ := cd.group.Do(item.Key, func() (interface{}, error) {
+	v, err, _ := cd.group.Do(item.Key, func() (any, error) {
 		b, err := cd.getBytes(item.Context(), item.Key, item.SkipLocalCache)
 		if err == nil {
 			cached = true
 			return b, nil
 		}
 
-		b, ok, err := cd.set(item)
+		b, ok, err := set(cd.redis, cd.cache, item)
 		if ok {
 			return b, nil
 		}
@@ -304,32 +448,45 @@ func (cd *Cache) getSetItemBytesOnce(item *Item) (b []byte, cached bool, err err
 }
 
 func (cd *Cache) Delete(ctx context.Context, key string) error {
-	if cd.opt.LocalCache != nil {
-		cd.opt.LocalCache.Del(key)
+	return delete(cd.redis, cd.cache, ctx, key)
+}
+
+func (cp *PipelinedCache) Delete(ctx context.Context, key string) error {
+	return delete(cp.redis, cp.cache, ctx, key)
+}
+
+func delete(redis rediser, cache *cache, ctx context.Context, key string) error {
+	if cache.localCache != nil {
+		cache.localCache.Del(key)
 	}
 
-	if cd.opt.Redis == nil {
-		if cd.opt.LocalCache == nil {
+	if redis == nil {
+		if cache.localCache == nil {
 			return errRedisLocalCacheNil
 		}
 		return nil
 	}
 
-	_, err := cd.opt.Redis.Del(ctx, key).Result()
+	_, err := redis.Del(ctx, key).Result()
 	return err
 }
 
 func (cd *Cache) DeleteFromLocalCache(key string) {
-	if cd.opt.LocalCache != nil {
-		cd.opt.LocalCache.Del(key)
+	if cd.localCache != nil {
+		cd.localCache.Del(key)
 	}
 }
 
-func (cd *Cache) Marshal(value interface{}) ([]byte, error) {
+func (cd *PipelinedCache) Exec(ctx context.Context) error {
+	_, err := cd.redis.(redis.Pipeliner).Exec(ctx)
+	return err
+}
+
+func (cd *Cache) Marshal(value any) ([]byte, error) {
 	return cd.marshal(value)
 }
 
-func (cd *Cache) _marshal(value interface{}) ([]byte, error) {
+func _marshal(value any) ([]byte, error) {
 	switch value := value.(type) {
 	case nil:
 		return nil, nil
@@ -363,11 +520,11 @@ func compress(data []byte) []byte {
 	return b
 }
 
-func (cd *Cache) Unmarshal(b []byte, value interface{}) error {
+func (cd *Cache) Unmarshal(b []byte, value any) error {
 	return cd.unmarshal(b, value)
 }
 
-func (cd *Cache) _unmarshal(b []byte, value interface{}) error {
+func _unmarshal(b []byte, value any) error {
 	if len(b) == 0 {
 		return nil
 	}
@@ -412,7 +569,7 @@ type Stats struct {
 
 // Stats returns cache statistics.
 func (cd *Cache) Stats() *Stats {
-	if !cd.opt.StatsEnabled {
+	if !cd.statsEnabled {
 		return nil
 	}
 	return &Stats{

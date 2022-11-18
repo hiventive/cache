@@ -10,7 +10,9 @@ import (
 
 type LocalCache interface {
 	Set(key string, data []byte)
+	MSet(keyTodata map[string][]byte)
 	Get(key string) ([]byte, bool)
+	MGet(keys []string) map[string][]byte
 	Del(key string)
 }
 
@@ -48,6 +50,19 @@ func (c *TinyLFU) Set(key string, b []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.set(key, b)
+}
+
+func (c *TinyLFU) MSet(keyTodata map[string][]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for key, data := range keyTodata {
+		c.set(key, data)
+	}
+}
+
+func (c *TinyLFU) set(key string, b []byte) {
 	ttl := c.ttl
 	if c.offset > 0 {
 		ttl += time.Duration(c.rand.Int63n(int64(c.offset)))
@@ -71,6 +86,21 @@ func (c *TinyLFU) Get(key string) ([]byte, bool) {
 
 	b := val.([]byte)
 	return b, true
+}
+
+func (c *TinyLFU) MGet(keys []string) map[string][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	keyToVal := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		val, ok := c.lfu.Get(key)
+		if ok {
+			keyToVal[key] = val.([]byte)
+		}
+	}
+
+	return keyToVal
 }
 
 func (c *TinyLFU) Del(key string) {
