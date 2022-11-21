@@ -323,7 +323,7 @@ func (cd *Cache) mGet(
 	keys ...string,
 ) error {
 
-	mapV := reflect.ValueOf(destMap).Elem()
+	mapV := reflect.ValueOf(destMap)
 	mapValT := mapV.Type().Elem()
 
 	keysToB, err := cd.mGetBytes(ctx, skipLocalCache, keys...)
