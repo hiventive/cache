@@ -1,6 +1,6 @@
-module github.com/hiventive/cache
+module github.com/hiventive/cache/v8
 
-go 1.18
+go 1.20
 
 require (
 	github.com/cespare/xxhash/v2 v2.1.2 // indirect
