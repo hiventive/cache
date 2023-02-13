@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/hiventive/cache"
+	"github.com/hiventive/cache/v8"
 )
 
 type Object struct {

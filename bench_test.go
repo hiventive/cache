@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hiventive/cache"
+	"github.com/hiventive/cache/v8"
 )
 
 func BenchmarkOnce(b *testing.B) {
