@@ -27,10 +27,10 @@ module:
 go mod init github.com/my/repo
 ```
 
-And then install go-redis/cache/v8 (note _v8_ in the import; omitting it is a popular mistake):
+And then install go-redis/cache/v9 (note _v9_ is the last version):
 
 ```shell
-go get github.com/go-redis/cache/v8
+go get github.com/go-redis/cache/v9
 ```
 
 ## Quickstart
@@ -43,8 +43,8 @@ import (
     "fmt"
     "time"
 
-    "github.com/go-redis/redis/v8"
-    "github.com/go-redis/cache/v8"
+    "github.com/go-redis/redis/v9"
+    "github.com/go-redis/cache/v9"
 )
 
 type Object struct {

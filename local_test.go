@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hiventive/cache/v8"
+	"github.com/hiventive/cache/v9"
 )
 
 func TestTinyLFU_Get_CorruptionOnExpiry(t *testing.T) {

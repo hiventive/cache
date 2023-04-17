@@ -1,9 +1,9 @@
-module github.com/hiventive/cache/v8
+module github.com/hiventive/cache/v9
 
 go 1.20
 
 require (
-	github.com/cespare/xxhash/v2 v2.1.2 // indirect
+	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/klauspost/compress v1.13.6
 	github.com/onsi/ginkgo v1.16.5
@@ -19,6 +19,7 @@ require (
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/kr/pretty v0.3.0 // indirect
 	github.com/nxadm/tail v1.4.8 // indirect
+	github.com/redis/go-redis/v9 v9.0.3 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	golang.org/x/net v0.4.0 // indirect
 	golang.org/x/sys v0.3.0 // indirect
