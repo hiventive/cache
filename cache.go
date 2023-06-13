@@ -305,13 +305,13 @@ func (cd *Cache) getBytes(ctx context.Context, key string, skipLocalCache bool) 
 }
 
 // MGet gets the values for the given keys
-// and puts them in a map[string]T
+// and puts them in a slice of type *[]*T
 func (cd *Cache) MGet(ctx context.Context, dest any, keys ...string) error {
 	return cd.mGet(ctx, true, dest, keys...)
 }
 
-// MGetSkippingChace gets the values for the given keys
-// skipping local cache and puts them in a map[string]T
+// MGetSkippingLocalCache gets the values for the given keys
+// skipping local cache and puts them in a slice of type *[]*T
 func (cd *Cache) MGetSkippingLocalCache(ctx context.Context, dest any, keys ...string) error {
 	return cd.mGet(ctx, false, dest, keys...)
 }
@@ -319,24 +319,30 @@ func (cd *Cache) MGetSkippingLocalCache(ctx context.Context, dest any, keys ...s
 func (cd *Cache) mGet(
 	ctx context.Context,
 	skipLocalCache bool,
-	destMap any,
+	dest any,
 	keys ...string,
 ) error {
 
-	mapV := reflect.ValueOf(destMap)
-	mapValT := mapV.Type().Elem()
-
-	keysToB, err := cd.mGetBytes(ctx, skipLocalCache, keys...)
+	b, err := cd.mGetBytes(ctx, skipLocalCache, keys...)
 	if err != nil {
 		return err
 	}
-	for key, b := range keysToB {
-		val := reflect.New(mapValT).Interface()
-		err := cd.unmarshal(b, val)
+
+	destV := reflect.ValueOf(dest).Elem()
+	destType := destV.Type()
+	underlyingType := destType.Elem().Elem()
+	destV.Set(reflect.MakeSlice(destType, len(keys), len(keys)))
+
+	for i := range b {
+		if len(b[i]) == 0 {
+			continue
+		}
+		val := reflect.New(underlyingType).Interface()
+		err := cd.unmarshal(b[i], val)
 		if err != nil {
 			return err
 		}
-		mapV.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(val).Elem())
+		destV.Index(i).Set(reflect.ValueOf(val).Elem())
 	}
 
 	return nil
@@ -346,31 +352,28 @@ func (cd *Cache) mGetBytes(
 	ctx context.Context,
 	skipLocalCache bool,
 	keys ...string,
-) (map[string][]byte, error) {
+) ([][]byte, error) {
 
-	var keysToB map[string][]byte
+	var b [][]byte
+	var notFoundIdx []int
 	if !skipLocalCache && cd.localCache != nil {
-		keysToB = cd.localCache.MGet(keys)
-		if len(keysToB) == len(keys) {
-			return keysToB, nil
+		b, keys, notFoundIdx = cd.localCache.MGet(keys)
+		if len(b) == len(keys) {
+			return b, nil
 		}
-		remainingKeys := make([]string, 0, len(keys)-len(keysToB))
-		for _, key := range keys {
-			_, ok := keysToB[key]
-			if !ok {
-				remainingKeys = append(remainingKeys, key)
-			}
-		}
-		keys = remainingKeys
 	} else {
-		keysToB = make(map[string][]byte, len(keys))
+		b = make([][]byte, 0, len(keys))
+		notFoundIdx = make([]int, len(keys))
+		for i := range keys {
+			notFoundIdx = append(notFoundIdx, i)
+		}
 	}
 
 	if cd.redis == nil {
 		if cd.localCache == nil {
 			return nil, errRedisLocalCacheNil
 		}
-		return keysToB, nil
+		return b, nil
 	}
 
 	vals, err := cd.redis.MGet(ctx, keys...).Result()
@@ -380,26 +383,27 @@ func (cd *Cache) mGetBytes(
 		}
 		return nil, err
 	}
+
 	for i, val := range vals {
 		if val == nil {
 			continue
 		}
 		switch typedVal := val.(type) {
 		case string:
-			keysToB[keys[i]] = []byte(typedVal)
+			b[notFoundIdx[i]] = []byte(typedVal)
 		case []byte:
-			keysToB[keys[i]] = typedVal
+			b[notFoundIdx[i]] = typedVal
 		}
 	}
 
 	if cd.statsEnabled {
-		atomic.AddUint64(&cd.hits, uint64(len(keysToB)))
+		atomic.AddUint64(&cd.hits, uint64(len(b)))
 	}
 
 	if !skipLocalCache && cd.localCache != nil {
-		cd.localCache.MSet(keysToB)
+		cd.localCache.MSet(keys, b)
 	}
-	return keysToB, nil
+	return b, nil
 }
 
 // Once gets the item.Value for the given item.Key from the cache or

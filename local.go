@@ -10,9 +10,9 @@ import (
 
 type LocalCache interface {
 	Set(key string, data []byte)
-	MSet(keyTodata map[string][]byte)
+	MSet(keys []string, b [][]byte)
 	Get(key string) ([]byte, bool)
-	MGet(keys []string) map[string][]byte
+	MGet(keys []string) ([][]byte, []string, []int)
 	Del(key string)
 }
 
@@ -53,12 +53,15 @@ func (c *TinyLFU) Set(key string, b []byte) {
 	c.set(key, b)
 }
 
-func (c *TinyLFU) MSet(keyTodata map[string][]byte) {
+func (c *TinyLFU) MSet(keys []string, b [][]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for key, data := range keyTodata {
-		c.set(key, data)
+	for i, key := range keys {
+		if len(b[i]) == 0 {
+			continue
+		}
+		c.set(key, b[i])
 	}
 }
 
@@ -88,19 +91,24 @@ func (c *TinyLFU) Get(key string) ([]byte, bool) {
 	return b, true
 }
 
-func (c *TinyLFU) MGet(keys []string) map[string][]byte {
+func (c *TinyLFU) MGet(keys []string) ([][]byte, []string, []int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	keyToVal := make(map[string][]byte, len(keys))
-	for _, key := range keys {
+	b := make([][]byte, 0, len(keys))
+	notFoundKeys := make([]string, len(keys))
+	notFoundIdx := make([]int, len(keys))
+	for i, key := range keys {
 		val, ok := c.lfu.Get(key)
 		if ok {
-			keyToVal[key] = val.([]byte)
+			b[i] = val.([]byte)
+			continue
 		}
+		notFoundKeys = append(notFoundKeys, key)
+		notFoundIdx = append(notFoundIdx, i)
 	}
 
-	return keyToVal
+	return b, notFoundKeys, notFoundIdx
 }
 
 func (c *TinyLFU) Del(key string) {
