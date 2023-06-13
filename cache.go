@@ -334,7 +334,7 @@ func (cd *Cache) mGet(
 	destV.Set(reflect.MakeSlice(destType, len(keys), len(keys)))
 
 	for i := range b {
-		if len(b[i]) == 0 {
+		if b[i] == nil {
 			continue
 		}
 		val := reflect.New(underlyingType).Interface()
@@ -342,7 +342,7 @@ func (cd *Cache) mGet(
 		if err != nil {
 			return err
 		}
-		destV.Index(i).Set(reflect.ValueOf(val).Elem())
+		destV.Index(i).Set(reflect.ValueOf(val))
 	}
 
 	return nil
@@ -362,8 +362,8 @@ func (cd *Cache) mGetBytes(
 			return b, nil
 		}
 	} else {
-		b = make([][]byte, 0, len(keys))
-		notFoundIdx = make([]int, len(keys))
+		b = make([][]byte, len(keys))
+		notFoundIdx = make([]int, 0, len(keys))
 		for i := range keys {
 			notFoundIdx = append(notFoundIdx, i)
 		}
